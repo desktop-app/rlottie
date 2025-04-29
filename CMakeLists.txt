@@ -41,23 +41,36 @@ target_include_directories(rlottie
         "${CMAKE_CURRENT_BINARY_DIR}"
     )
 
-#declare target compilation options
-target_compile_options(rlottie
-                    PUBLIC
-                    PRIVATE
-                        -std=c++14
-                        -fno-exceptions
-                        -fno-unwind-tables
-                        -fno-asynchronous-unwind-tables
-                        -fno-rtti
-                        -Wall
-                        -Werror
-                        -Wextra
-                        -Wnon-virtual-dtor
-                        -Woverloaded-virtual
-                        -Wno-unused-parameter
-                        -fvisibility=hidden
-                    )
+#declare common target compilation options
+if(MSVC)
+    target_compile_options(rlottie
+                        PUBLIC
+                        PRIVATE
+                            /std:c++14
+                            /EHs-c- # disable exceptions
+                            /GR- # disable RTTI
+                            /W3
+                        )
+else()
+    target_compile_options(rlottie
+                        PUBLIC
+                        PRIVATE
+                            -std=c++14
+                            -fno-exceptions
+                            -fno-unwind-tables
+                            -fno-asynchronous-unwind-tables
+                            -fno-rtti
+                            -Wall
+                            -fvisibility=hidden
+                            -Wnon-virtual-dtor
+                            -Woverloaded-virtual
+                            -Wno-unused-parameter
+                        )
+endif()
+
+if (WIN32 AND NOT BUILD_SHARED_LIBS)
+    target_compile_definitions(rlottie PUBLIC -DLOT_BUILD=0)
+endif()
 
 #declare dependancy
 set( CMAKE_THREAD_PREFER_PTHREAD TRUE )
@@ -78,7 +91,7 @@ if(APPLE)
                         PUBLIC
                              "-Wl, -undefined error"
                           )
-else()
+elseif(NOT MSVC)
     target_link_libraries(rlottie
                         PUBLIC
                              "-Wl,--no-undefined"
@@ -121,6 +134,7 @@ install( TARGETS rlottie EXPORT rlottie-targets
          LIBRARY     DESTINATION    ${LIB_INSTALL_DIR}
          ARCHIVE     DESTINATION    ${LIB_INSTALL_DIR}
          INCLUDES    DESTINATION    include
+         RUNTIME     DESTINATION    bin
        )
 
 #install config file.

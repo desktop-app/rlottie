@@ -2,9 +2,11 @@ if(LOTTIE_MODULE)
     add_library(rlottie-image-loader SHARED
                 stb_image.cpp
                )
-    target_compile_options(rlottie-image-loader PRIVATE
-                           -fvisibility=hidden
-                          )
+    if(NOT MSVC)
+        target_compile_options(rlottie-image-loader PRIVATE
+                               -fvisibility=hidden
+                              )
+    endif()
     set_target_properties(rlottie-image-loader PROPERTIES
                           DEFINE_SYMBOL LOT_BUILD
                          )

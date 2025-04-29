@@ -1,8 +1,14 @@
 add_executable(lottie2gif "lottie2gif.cpp")
 
-target_compile_options(lottie2gif
-                       PRIVATE
-                       -std=c++11)
+if(MSVC)
+    target_compile_options(lottie2gif
+                           PRIVATE
+                           /std:c++11)
+else()
+    target_compile_options(lottie2gif
+                           PRIVATE
+                           -std=c++11)
+endif()
 
 target_link_libraries(lottie2gif rlottie)
 
