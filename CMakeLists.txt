@@ -16,6 +16,11 @@ endif()
 add_library( rlottie )
 set_target_properties( rlottie PROPERTIES DEFINE_SYMBOL LOT_BUILD )
 
+find_package(RapidJSON CONFIG)
+if(RapidJSON_FOUND)
+    target_link_libraries(rlottie PRIVATE rapidjson)
+endif()
+
 #declare version of the target
 set(player_version_major 0)
 set(player_version_minor 0)

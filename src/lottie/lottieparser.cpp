@@ -54,7 +54,7 @@
 #include <array>
 
 #include "lottiemodel.h"
-#include "rapidjson/document.h"
+#include <rapidjson/document.h>
 
 RAPIDJSON_DIAG_PUSH
 #ifdef __GNUC__
