@@ -33,6 +33,7 @@ option(LOTTIE_MODULE "Enable LOTTIE MODULE SUPPORT" ON)
 option(LOTTIE_THREAD "Enable LOTTIE THREAD SUPPORT" ON)
 option(LOTTIE_CACHE "Enable LOTTIE CACHE SUPPORT" ON)
 option(LOTTIE_TEST "Build LOTTIE AUTOTESTS" OFF)
+option(LOTTIE_DISABLE_ARM_NEON "Disable ARM NEON optimiztions" ON)
 
 CONFIGURE_FILE(${CMAKE_CURRENT_LIST_DIR}/cmake/config.h.in config.h)
 
@@ -70,6 +71,10 @@ endif()
 
 if (WIN32 AND NOT BUILD_SHARED_LIBS)
     target_compile_definitions(rlottie PUBLIC -DLOT_BUILD=0)
+endif()
+
+if (LOTTIE_DISABLE_ARM_NEON)
+    target_compile_definitions(rlottie PRIVATE LOTTIE_DISABLE_ARM_NEON)
 endif()
 
 #declare dependancy
