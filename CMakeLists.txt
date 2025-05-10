@@ -16,7 +16,7 @@ endif()
 add_library( rlottie )
 set_target_properties( rlottie PROPERTIES DEFINE_SYMBOL LOT_BUILD )
 
-find_package(RapidJSON CONFIG)
+find_package(RapidJSON)
 if(RapidJSON_FOUND)
     target_link_libraries(rlottie PRIVATE rapidjson)
 endif()
