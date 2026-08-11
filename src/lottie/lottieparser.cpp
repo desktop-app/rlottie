@@ -283,6 +283,8 @@ protected:
     std::vector<std::shared_ptr<LOTLayerData>> mLayersToUpdate;
     std::string                                mDirPath;
     std::vector<LayerInfo>                     mLayerInfoList;
+    static constexpr int                       MaxGroupDepth = 64;
+    int                                        mGroupDepth{0};
     void                                       SkipOut(int depth);
 };
 
@@ -1193,6 +1195,12 @@ void LottieParserImpl::parseObject(LOTGroupData *parent)
 
 std::shared_ptr<LOTData> LottieParserImpl::parseGroupObject()
 {
+    if (mGroupDepth >= MaxGroupDepth) {
+        st_ = kError;
+        return nullptr;
+    }
+    ++mGroupDepth;
+
     std::shared_ptr<LOTShapeGroupData> sharedGroup =
         std::make_shared<LOTShapeGroupData>();
 
@@ -1226,6 +1234,7 @@ std::shared_ptr<LOTData> LottieParserImpl::parseGroupObject()
         group->setStatic(staticFlag && group->mTransform->isStatic());
     }
 
+    --mGroupDepth;
     return sharedGroup;
 }
 
