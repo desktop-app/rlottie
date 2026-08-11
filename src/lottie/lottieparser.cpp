@@ -446,7 +446,7 @@ const char *LottieParserImpl::GetString()
     if (st_ != kHasString) {
         st_ = kError;
         //RAPIDJSON_ASSERT(false);
-        return nullptr;
+        return "";
     }
 
     const char *result = v_.GetString();
