@@ -33,6 +33,18 @@
  * AE. which means (start frame > endFrame) 3.
  */
 
+/*
+ * Bound for the number of items the whole animation is built out of. Two
+ * different constructs expand a small file into an unbounded item tree: nested
+ * precomps, which share their layer data instead of copying it, so every one
+ * of n levels referencing the next one twice doubles the count, and nested
+ * repeaters, which multiply their copy counts. Items are what actually costs
+ * memory, so bounding them is what keeps either from exhausting it before the
+ * first frame. It is an order of magnitude above what a hand made animation,
+ * even a detailed one, is built from.
+ */
+static constexpr int kMaxItems = 16384;
+
 static bool transformProp(rlottie::Property prop)
 {
     switch (prop) {
@@ -83,7 +95,8 @@ LOTCompItem::LOTCompItem(LOTModel *model)
     : mCurFrameNo(-1)
 {
     mCompData = model->mRoot.get();
-    mRootLayer = createLayerItem(mCompData->mRootLayer.get());
+    auto budget = kMaxItems;
+    mRootLayer = createLayerItem(mCompData->mRootLayer.get(), budget);
     mRootLayer->setComplexContent(false);
     mViewSize = mCompData->size();
 }
@@ -95,17 +108,20 @@ void LOTCompItem::setValue(const std::string &keypath, LOTVariant &value)
 }
 
 std::unique_ptr<LOTLayerItem> LOTCompItem::createLayerItem(
-    LOTLayerData *layerData)
+    LOTLayerData *layerData, int &budget)
 {
+    if (budget <= 0) return nullptr;
+
+    --budget;
     switch (layerData->mLayerType) {
     case LayerType::Precomp: {
-        return std::make_unique<LOTCompLayerItem>(layerData);
+        return std::make_unique<LOTCompLayerItem>(layerData, budget);
     }
     case LayerType::Solid: {
         return std::make_unique<LOTSolidLayerItem>(layerData);
     }
     case LayerType::Shape: {
-        return std::make_unique<LOTShapeLayerItem>(layerData);
+        return std::make_unique<LOTShapeLayerItem>(layerData, budget);
     }
     case LayerType::Null: {
         return std::make_unique<LOTNullLayerItem>(layerData);
@@ -513,7 +529,7 @@ bool LOTLayerItem::visible() const
             frameNo() < mLayerData->outFrame());
 }
 
-LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel)
+LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel, int &budget)
     : LOTLayerItem(layerModel)
 {
     // 1. create layer item
@@ -522,7 +538,7 @@ LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel)
             continue;
         }
         auto model = static_cast<LOTLayerData *>(i.get());
-        auto item = LOTCompItem::createLayerItem(model);
+        auto item = LOTCompItem::createLayerItem(model, budget);
         if (item) mLayers.push_back(std::move(item));
     }
 
@@ -871,11 +887,11 @@ LOTNullLayerItem::LOTNullLayerItem(LOTLayerData *layerData)
 }
 void LOTNullLayerItem::updateContent() {}
 
-LOTShapeLayerItem::LOTShapeLayerItem(LOTLayerData *layerData)
+LOTShapeLayerItem::LOTShapeLayerItem(LOTLayerData *layerData, int &budget)
     : LOTLayerItem(layerData),
-      mRoot(std::make_unique<LOTContentGroupItem>(nullptr))
+      mRoot(std::make_unique<LOTContentGroupItem>())
 {
-    mRoot->addChildren(layerData);
+    mRoot->addChildren(layerData, budget);
 
     std::vector<LOTPathDataItem *> list;
     mRoot->processPaintItems(list);
@@ -887,12 +903,15 @@ LOTShapeLayerItem::LOTShapeLayerItem(LOTLayerData *layerData)
 }
 
 std::unique_ptr<LOTContentItem> LOTShapeLayerItem::createContentItem(
-    LOTData *contentData)
+    LOTData *contentData, int &budget)
 {
+    if (budget <= 0) return nullptr;
+
+    --budget;
     switch (contentData->type()) {
     case LOTData::Type::ShapeGroup: {
         return std::make_unique<LOTContentGroupItem>(
-            static_cast<LOTGroupData *>(contentData));
+            static_cast<LOTGroupData *>(contentData), budget);
     }
     case LOTData::Type::Rect: {
         return std::make_unique<LOTRectItem>(
@@ -928,7 +947,7 @@ std::unique_ptr<LOTContentItem> LOTShapeLayerItem::createContentItem(
     }
     case LOTData::Type::Repeater: {
         return std::make_unique<LOTRepeaterItem>(
-            static_cast<LOTRepeaterData *>(contentData));
+            static_cast<LOTRepeaterData *>(contentData), budget);
     }
     case LOTData::Type::Trim: {
         return std::make_unique<LOTTrimItem>(
@@ -1025,18 +1044,18 @@ bool LOTStrokeItem::resolveKeyPath(LOTKeyPath &keyPath, uint depth,
     return false;
 }
 
-LOTContentGroupItem::LOTContentGroupItem(LOTGroupData *data)
+LOTContentGroupItem::LOTContentGroupItem(LOTGroupData *data, int &budget)
     : LOTContentItem(ContentType::Group), mData(data)
 {
-    addChildren(mData);
+    addChildren(mData, budget);
 }
 
-void LOTContentGroupItem::addChildren(LOTGroupData *data)
+void LOTContentGroupItem::addChildren(LOTGroupData *data, int &budget)
 {
     if (!data) return;
 
     for (auto &i : data->mChildren) {
-        auto content = LOTShapeLayerItem::createContentItem(i.get());
+        auto content = LOTShapeLayerItem::createContentItem(i.get(), budget);
         if (content) {
             content->setParent(this);
             mContents.push_back(std::move(content));
@@ -1545,18 +1564,28 @@ void LOTTrimItem::addPathItems(std::vector<LOTPathDataItem *> &list,
               back_inserter(mPathItems));
 }
 
-LOTRepeaterItem::LOTRepeaterItem(LOTRepeaterData *data) : mRepeaterData(data)
+/*
+ * Bound for the number of copies a single repeater makes, on top of the item
+ * budget the copies are taken out of. Every copy is a full clone of the
+ * repeated content, walked again on every frame, and a count taken from the
+ * animation data unchanged is a way to ask for all of the budget at once.
+ */
+static constexpr int kMaxRepeaterCopies = 1000;
+
+LOTRepeaterItem::LOTRepeaterItem(LOTRepeaterData *data, int &budget)
+    : mRepeaterData(data)
 {
     assert(mRepeaterData->content());
 
-    mCopies = mRepeaterData->maxCopies();
+    mCopies = std::min(mRepeaterData->maxCopies(), kMaxRepeaterCopies);
 
-    for (int i = 0; i < mCopies; i++) {
-        auto content =
-            std::make_unique<LOTContentGroupItem>(mRepeaterData->content());
+    for (int i = 0; i < mCopies && budget > 0; i++) {
+        auto content = std::make_unique<LOTContentGroupItem>(
+            mRepeaterData->content(), budget);
         content->setParent(this);
         mContents.push_back(std::move(content));
     }
+    mCopies = int(mContents.size());
 }
 
 void LOTRepeaterItem::update(int frameNo, const VMatrix &parentMatrix,

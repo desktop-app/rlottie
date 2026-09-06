@@ -45,6 +45,7 @@ private:
     size_t               mArraySize{0};
     VPointF              mCurPt;
     size_t               mIndex{0}; /* index to the dash Array */
+    size_t               mBudget{0}; /* dashes left to generate */
     float                mCurrentLength;
     float                mDashOffset{0};
     VPath                mResult;

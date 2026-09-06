@@ -25,6 +25,16 @@
 
 V_BEGIN_NAMESPACE
 
+/*
+ * Bound for the number of dashes one path is cut into. Both the dash lengths
+ * and the path they are applied to come from the animation data, and the loops
+ * below step one dash at a time, so a short dash on a long path generates
+ * segments -- and the points backing them -- until memory runs out. Past the
+ * bound the remainder of the path is emitted as one piece, which is what a
+ * dash pattern that fine looks like on screen anyway.
+ */
+static constexpr size_t kMaxDashes = 100000;
+
 VDasher::VDasher(const float *dashArray, size_t size)
 {
     mDashArray = reinterpret_cast<const VDasher::Dash *>(dashArray);
@@ -120,7 +130,8 @@ void VDasher::lineTo(const VPointF &p)
         mCurrentLength -= length;
         addLine(p);
     } else {
-        while (length > mCurrentLength) {
+        while (length > mCurrentLength && mBudget) {
+            --mBudget;
             length -= mCurrentLength;
             line.splitAtLength(mCurrentLength, left, right);
 
@@ -163,7 +174,8 @@ void VDasher::cubicTo(const VPointF &cp1, const VPointF &cp2, const VPointF &e)
         mCurrentLength -= bezLen;
         addCubic(cp1, cp2, e);
     } else {
-        while (bezLen > mCurrentLength) {
+        while (bezLen > mCurrentLength && mBudget) {
+            --mBudget;
             bezLen -= mCurrentLength;
             b.splitAtLength(mCurrentLength, &left, &right);
 
@@ -196,6 +208,7 @@ VPath VDasher::dashed(const VPath &path)
     mResult = {};
     mResult.reserve(path.points().size(), path.elements().size());
     mIndex = 0;
+    mBudget = kMaxDashes;
     const std::vector<VPath::Element> &elms = path.elements();
     const std::vector<VPointF> &       pts = path.points();
     const VPointF *                    ptPtr = pts.data();

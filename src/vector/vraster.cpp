@@ -51,6 +51,28 @@ private:
     std::unique_ptr<T[]> mData{nullptr};
 };
 
+/*
+ * Bound for a device space coordinate on its way into freetype's 26.6 fixed
+ * point. Nothing beyond it can be visible on a canvas of a sane size, while
+ * converting one is undefined behaviour, and the garbage the conversion
+ * produces lands back inside the clip box: the curve is then no longer
+ * rejected as off screen and gets subdivided until the frame takes seconds.
+ * Each coordinate is bounded on its own, which leaves every crossing of the
+ * clip box where it was, so anything that was already in range is unchanged.
+ */
+static constexpr float kMaxCoordinate = float(1 << 16);
+
+/*
+ * Bound for a stroke width and a miter limit. The stroker offsets every point
+ * of the outline by half the width and writes the result into the outline
+ * itself, so the bound above does not cover it: a wide enough stroke puts the
+ * whole stroke outline out of range even when the path is well inside it, and
+ * the rasterizer then walks every one of the cells each of its segments spans.
+ * A stroke this wide already covers any canvas the animation is drawn on.
+ */
+static constexpr float kMaxStrokeWidth = float(1 << 12);
+static constexpr float kMaxMiterLimit = float(1 << 14);
+
 struct FTOutline {
 public:
     void reset();
@@ -65,7 +87,7 @@ public:
     void transform(const VMatrix &m);
     SW_FT_Pos TO_FT_COORD(float x)
     {
-        return SW_FT_Pos(x * 64);
+        return SW_FT_Pos(vClamped(x, -kMaxCoordinate, kMaxCoordinate) * 64);
     }  // to freetype 26.6 coordinate.
     SW_FT_Outline           ft;
     bool                    closed{false};
@@ -134,12 +156,13 @@ void FTOutline::convert(CapStyle cap, JoinStyle join, float width,
 {
     // map strokeWidth to freetype. It uses as the radius of the pen not the
     // diameter
-    width = width / 2.0f;
+    width = vClamped(width, -kMaxStrokeWidth, kMaxStrokeWidth) / 2.0f;
     // convert to freetype co-ordinate
     // IMP: stroker takes radius in 26.6 co-ordinate
     ftWidth = SW_FT_Fixed(width * (1 << 6));
     // IMP: stroker takes meterlimit in 16.16 co-ordinate
-    ftMiterLimit = SW_FT_Fixed(miterLimit * (1 << 16));
+    ftMiterLimit = SW_FT_Fixed(
+        vClamped(miterLimit, -kMaxMiterLimit, kMaxMiterLimit) * (1 << 16));
 
     // map to freetype capstyle
     switch (cap) {
@@ -357,10 +380,24 @@ struct VRleTask {
         sw_ft_grays_raster.raster_render(nullptr, &params);
     }
 
+    /*
+     * Publishes an empty result for a path the rasterizer will not accept. The
+     * thread that asked for the rle waits on the condition variable until the
+     * task reports back, so a task that just returns leaves it blocked for the
+     * rest of the process' life.
+     */
+    void drop()
+    {
+        mRle.unsafe().reset();
+        mPath = VPath();
+        mRle.notify();
+    }
+
     void operator()(FTOutline &outRef, SW_FT_Stroker &stroker)
     {
         if (mPath.points().size() > SHRT_MAX ||
             mPath.points().size() + mPath.segments() > SHRT_MAX) {
+            drop();
             return;
         }
 
@@ -374,6 +411,16 @@ struct VRleTask {
                               outRef.ftJoin, outRef.ftMiterLimit);
             SW_FT_Stroker_ParseOutline(stroker, &outRef.ft);
             SW_FT_Stroker_GetCounts(stroker, &points, &contors);
+
+            // The stroke outline is generated from the path, so the check
+            // above says nothing about how large it is. Its point and contour
+            // counts are stored into the outline as shorts, and the export
+            // writes the second border at the truncated offset, past the
+            // memory grow() reserved for it.
+            if (points > uint(SHRT_MAX) || contors > uint(SHRT_MAX)) {
+                drop();
+                return;
+            }
 
             outRef.grow(points, contors);
 

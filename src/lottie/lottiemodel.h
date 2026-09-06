@@ -902,8 +902,10 @@ public:
      * if no offset then there is no loop.
      */
     Segment segment(int frameNo) const {
-        float start = mStart.value(frameNo)/100.0f;
-        float end = mEnd.value(frameNo)/100.0f;
+        // The whole segment math below, and the asserts that guard it, assume
+        // a start and an end inside the 0..100 percent the format defines.
+        float start = vClamped(mStart.value(frameNo), 0.0f, 100.0f)/100.0f;
+        float end = vClamped(mEnd.value(frameNo), 0.0f, 100.0f)/100.0f;
         float offset = std::fmod(mOffset.value(frameNo), 360.0f)/ 360.0f;
 
         float diff = std::abs(start - end);

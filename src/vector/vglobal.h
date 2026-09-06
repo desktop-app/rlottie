@@ -140,6 +140,19 @@ static inline bool vIsZero(double f)
     return (std::abs(f) <= EPSILON_DOUBLE);
 }
 
+/*
+ * Bounds a value that came out of the animation data. Animation data is
+ * attacker controlled, so a value may be a NaN, or one of the infinities a
+ * JSON number too large for a float decays into, and both of those turn every
+ * arithmetic result that depends on them into a NaN as well. Comparing against
+ * min first makes those values land on min instead of passing through, which
+ * plain clamping with vMin/vMax would let them do.
+ */
+static inline float vClamped(float value, float min, float max)
+{
+    return (value >= min) ? ((value <= max) ? value : max) : min;
+}
+
 class vFlagHelper {
     int i;
 

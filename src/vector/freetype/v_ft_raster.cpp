@@ -1430,9 +1430,14 @@ static int gray_raster_render(gray_PRaster               raster,
     ras.render_span_data = params->user;
 
     gray_convert_glyph(RAS_VAR);
-    params->bbox_cb(ras.bound_left, ras.bound_top,
-                    ras.bound_right - ras.bound_left,
-                    ras.bound_bottom - ras.bound_top + 1, params->user);
+    /* an outline entirely outside the clip box records no span at all, and */
+    /* the bounds are then still the reversed values they start out as, so  */
+    /* the extents below would overflow. leave the caller with the empty    */
+    /* bounding box its rle was reset to instead.                           */
+    if (ras.bound_left <= ras.bound_right && ras.bound_top <= ras.bound_bottom)
+        params->bbox_cb(ras.bound_left, ras.bound_top,
+                        ras.bound_right - ras.bound_left,
+                        ras.bound_bottom - ras.bound_top + 1, params->user);
     return 1;
 }
 

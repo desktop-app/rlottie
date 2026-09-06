@@ -509,12 +509,26 @@ static VPointF curvesForArc(const VRectF &rect, float startAngle,
     return startPoint;
 }
 
+/*
+ * Bound for the number of points of a star or a polygon. Both the reserve()
+ * and the loop that follows it are driven by this count, which comes straight
+ * out of the animation data: an unbounded one asks for more points than the
+ * path, the freetype outline or the process itself can hold, and converting it
+ * to a size_t is undefined for values that large, so the reserve either throws
+ * or wraps around and the loop then appends points until the allocator gives
+ * up. A rounded corner spends three points per segment, so this bound keeps
+ * even the widest shape well inside the SHRT_MAX points the rasterizer takes,
+ * and it is two orders of magnitude above any star a designer draws.
+ */
+static constexpr float POLYSTAR_MAX_POINTS = 5000.0f;
+
 void VPath::VPathData::addPolystar(float points, float innerRadius,
                                    float outerRadius, float innerRoundness,
                                    float outerRoundness, float startAngle,
                                    float cx, float cy, VPath::Direction dir)
 {
     const static float POLYSTAR_MAGIC_NUMBER = 0.47829f / 0.28f;
+    points = vClamped(points, 0.0f, POLYSTAR_MAX_POINTS);
     float              currentAngle = (startAngle - 90.0f) * K_PI / 180.0f;
     float              x;
     float              y;
@@ -620,6 +634,7 @@ void VPath::VPathData::addPolygon(float points, float radius, float roundness,
 {
     // TODO: Need to support floating point number for number of points
     const static float POLYGON_MAGIC_NUMBER = 0.25;
+    points = vClamped(points, 0.0f, POLYSTAR_MAX_POINTS);
     float              currentAngle = (startAngle - 90.0f) * K_PI / 180.0f;
     float              x;
     float              y;

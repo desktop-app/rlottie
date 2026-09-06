@@ -52,6 +52,7 @@
 // the parse.
 
 #include <array>
+#include <unordered_set>
 
 #include "lottiemodel.h"
 #include "rapidjson/document.h"
@@ -167,6 +168,13 @@ protected:
     static const int parseFlags = kParseDefaultFlags | kParseInsituFlag;
 };
 
+/*
+ * Bound for any number read out of the animation. Frame numbers, canvas sized
+ * coordinates and percentages all stay many orders of magnitude below it, so
+ * it only ever truncates values that could not have been drawn anyway.
+ */
+static constexpr double kMaxNumber = 1e6;
+
 class LottieParserImpl : public LookaheadParserHandler {
 public:
     LottieParserImpl(char *str, const char *dir_path,
@@ -270,6 +278,7 @@ public:
     LottieColor applyReplacements(const LottieColor &color);
 
     void resolveLayerRefs();
+    std::unordered_set<const LOTLayerData *> findCyclicRefs() const;
 
 protected:
     std::vector<std::pair<std::uint32_t, std::uint32_t>>
@@ -417,7 +426,20 @@ double LottieParserImpl::GetDouble()
 
     double result = v_.GetDouble();
     ParseNext();
-    return result;
+
+    /*
+     * Every number in the animation ends up here, and almost all of them are
+     * stored into a float. A JSON number larger than the float range turns into
+     * an infinity on that assignment, and an infinity poisons every coordinate,
+     * radius and count derived from it: the geometry it produces no longer
+     * compares as off screen, so the checks that reject invisible shapes stop
+     * rejecting anything, and the conversions into fixed point and into
+     * allocation sizes become undefined. Bounding the value here is the one
+     * place that covers all of them, far above anything a real animation uses.
+     */
+    return (result >= -kMaxNumber)
+        ? ((result <= kMaxNumber) ? result : kMaxNumber)
+        : -kMaxNumber;
 }
 
 bool LottieParserImpl::GetBool()
@@ -549,15 +571,85 @@ LottieBlendMode LottieParserImpl::getBlendMode()
     return mode;
 }
 
+/*
+ * Collects the precomp layers whose reference closes a cycle in the asset
+ * graph.
+ *
+ * Resolving a precomp reference copies the layers of the referenced asset into
+ * the referencing layer, and the layers are shared, not cloned. A reference
+ * cycle therefore makes a layer its own descendant, and the resolved tree is
+ * infinitely deep: repeater processing, item construction and rendering all
+ * walk it recursively and run out of stack. Because the layers are shared,
+ * there is no single edge left to cut once the tree is built, so the cycles
+ * are found on the asset graph beforehand and only the references that close
+ * one are left unresolved.
+ */
+std::unordered_set<const LOTLayerData *>
+LottieParserImpl::findCyclicRefs() const
+{
+    struct Edge {
+        const LOTLayerData *from;
+        const std::string * to;
+    };
+    std::unordered_map<std::string, std::vector<Edge>> edges;
+    for (const auto &asset : compRef->mAssets) {
+        auto &out = edges[asset.first];
+        for (const auto &child : asset.second->mLayers) {
+            if (child->type() != LOTData::Type::Layer) continue;
+
+            auto layer = static_cast<const LOTLayerData *>(child.get());
+            if (layer->mLayerType == LayerType::Precomp && layer->mExtra) {
+                out.push_back({layer, &layer->mExtra->mPreCompRefId});
+            }
+        }
+    }
+
+    std::unordered_set<const LOTLayerData *> cyclic;
+    std::unordered_set<std::string>          visited;
+    std::unordered_set<std::string>          onPath;
+    std::vector<std::string>                 path;
+    for (const auto &asset : compRef->mAssets) {
+        if (visited.count(asset.first)) continue;
+
+        path.push_back(asset.first);
+        while (!path.empty()) {
+            const auto id = path.back();
+            if (onPath.count(id)) {
+                onPath.erase(id);
+                path.pop_back();
+                continue;
+            } else if (!visited.insert(id).second) {
+                // Reached again through a branch that is already finished.
+                path.pop_back();
+                continue;
+            }
+            onPath.insert(id);
+            auto search = edges.find(id);
+            if (search == edges.end()) continue;
+
+            for (const auto &edge : search->second) {
+                if (onPath.count(*edge.to)) {
+                    cyclic.insert(edge.from);
+                } else if (!visited.count(*edge.to)) {
+                    path.push_back(*edge.to);
+                }
+            }
+        }
+    }
+    return cyclic;
+}
+
 void LottieParserImpl::resolveLayerRefs()
 {
+    const auto cyclic = findCyclicRefs();
     for (const auto &i : mLayersToUpdate) {
         LOTLayerData *layer = i.get();
         auto          search = compRef->mAssets.find(layer->extra()->mPreCompRefId);
         if (search != compRef->mAssets.end()) {
             if (layer->mLayerType == LayerType::Image) {
                 layer->extra()->mAsset = search->second;
-            } else if (layer->mLayerType == LayerType::Precomp) {
+            } else if (layer->mLayerType == LayerType::Precomp
+                && !cyclic.count(layer)) {
                 layer->mChildren = search->second->mLayers;
                 layer->setStatic(layer->isStatic() &&
                                  search->second->isStatic());
@@ -983,7 +1075,10 @@ std::shared_ptr<LOTData> LottieParserImpl::parseLayer(bool record)
             mLayersToUpdate.push_back(sharedLayer);
         } else if (0 == strcmp(key, "sr")) {  // "Layer Time Stretching"
             RAPIDJSON_ASSERT(PeekType() == kNumberType);
-            layer->mTimeStreatch = GetDouble();
+            // The stretch divides the frame number, so a zero one turns every
+            // frame of the layer into a NaN before it is rounded to an int.
+            const auto streatch = GetDouble();
+            if (streatch != 0.) layer->mTimeStreatch = streatch;
         } else if (0 == strcmp(key, "tm")) {  // time remapping
             parseProperty(layer->extra()->mTimeRemap);
         } else if (0 == strcmp(key, "ip")) {
