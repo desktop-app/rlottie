@@ -17,6 +17,7 @@
  */
 
 #include "vbitmap.h"
+#include <cstdint>
 #include <string>
 #include <memory>
 #include "vdrawhelper.h"
@@ -54,14 +55,26 @@ struct VBitmap::Impl {
     void reset(size_t width, size_t height, VBitmap::Format format)
     {
         mRoData = nullptr;
+        mFormat = format;
+        mDepth = depth(format);
+
+        constexpr uint64_t kMaxBitmapBytes = 128ull * 1024 * 1024;
+
+        uint64_t stride64 = 0, size64 = 0;
+        if (width > 0 && height > 0) {
+            stride64 = ((uint64_t(width) * mDepth + 31) >> 5) << 2; // bytes per scanline (must be multiple of 4)
+            size64 = stride64 * uint64_t(height);
+            if (size64 > kMaxBitmapBytes) size64 = 0;
+        }
+        if (size64 == 0) {
+            // Invalid or oversized request: fall back to an empty bitmap instead of an undersized allocation.
+            width = height = stride64 = 0;
+        }
+
         mWidth = uint(width);
         mHeight = uint(height);
-        mFormat = format;
-
-        mDepth = depth(format);
-        mStride = ((mWidth * mDepth + 31) >> 5)
-                      << 2;  // bytes per scanline (must be multiple of 4)
-        mOwnData = std::make_unique<uchar[]>(mStride * mHeight);
+        mStride = uint(stride64);
+        mOwnData = std::make_unique<uchar[]>(size64);
     }
 
     static uchar depth(VBitmap::Format format)
