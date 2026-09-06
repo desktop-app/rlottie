@@ -69,6 +69,9 @@ static bool strokeProp(rlottie::Property prop)
     }
 }
 
+static constexpr int    kMaxLayerDepth = 32;      // precomp nesting-depth limit
+static constexpr size_t kMaxLayerNodes = 100000;  // global render-node budget
+
 static bool isGoodParentLayer(LOTLayerItem *parent, LOTLayerItem *child) {
     do {
         if (parent == child) {
@@ -83,7 +86,8 @@ LOTCompItem::LOTCompItem(LOTModel *model)
     : mCurFrameNo(-1)
 {
     mCompData = model->mRoot.get();
-    mRootLayer = createLayerItem(mCompData->mRootLayer.get());
+    size_t nodeBudget = kMaxLayerNodes;
+    mRootLayer = createLayerItem(mCompData->mRootLayer.get(), 0, nodeBudget);
     mRootLayer->setComplexContent(false);
     mViewSize = mCompData->size();
 }
@@ -95,11 +99,22 @@ void LOTCompItem::setValue(const std::string &keypath, LOTVariant &value)
 }
 
 std::unique_ptr<LOTLayerItem> LOTCompItem::createLayerItem(
-    LOTLayerData *layerData)
+    LOTLayerData *layerData, int depth, size_t &nodeBudget)
 {
+    if (depth >= kMaxLayerDepth) {
+        vWarning << "Max precomp nesting depth (" << kMaxLayerDepth << ") exceeded";
+        return nullptr;
+    }
+    if (nodeBudget == 0) {
+        vWarning << "Max render node budget (" << kMaxLayerNodes << ") exceeded";
+        return nullptr;
+    }
+    --nodeBudget;
+
     switch (layerData->mLayerType) {
     case LayerType::Precomp: {
-        return std::make_unique<LOTCompLayerItem>(layerData);
+        return std::make_unique<LOTCompLayerItem>(layerData, depth + 1,
+                                                  nodeBudget);
     }
     case LayerType::Solid: {
         return std::make_unique<LOTSolidLayerItem>(layerData);
@@ -513,7 +528,8 @@ bool LOTLayerItem::visible() const
             frameNo() < mLayerData->outFrame());
 }
 
-LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel)
+LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel, int depth,
+                                   size_t &nodeBudget)
     : LOTLayerItem(layerModel)
 {
     // 1. create layer item
@@ -522,7 +538,7 @@ LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel)
             continue;
         }
         auto model = static_cast<LOTLayerData *>(i.get());
-        auto item = LOTCompItem::createLayerItem(model);
+        auto item = LOTCompItem::createLayerItem(model, depth, nodeBudget);
         if (item) mLayers.push_back(std::move(item));
     }
 

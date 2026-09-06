@@ -64,7 +64,9 @@ class LOTCompItem
 {
 public:
    explicit LOTCompItem(LOTModel *model);
-   static std::unique_ptr<LOTLayerItem> createLayerItem(LOTLayerData *layerData);
+   static std::unique_ptr<LOTLayerItem> createLayerItem(LOTLayerData *layerData,
+                                                       int depth,
+                                                       size_t &nodeBudget);
    bool update(int frameNo, const VSize &size, bool keepAspectRatio);
    VSize size() const { return mViewSize;}
    void buildRenderTree();
@@ -148,7 +150,7 @@ protected:
 class LOTCompLayerItem: public LOTLayerItem
 {
 public:
-   explicit LOTCompLayerItem(LOTLayerData *layerData);
+   LOTCompLayerItem(LOTLayerData *layerData, int depth, size_t &nodeBudget);
    void renderList(std::vector<VDrawable *> &list)final;
    void render(VPainter *painter, const VRle &mask, const VRle &matteRle) final;
    void buildLayerNode() final;

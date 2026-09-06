@@ -23,6 +23,13 @@
 #include "vimageloader.h"
 #include "vline.h"
 
+static constexpr int kMaxModelTreeDepth = 32;
+struct DepthGuard {
+    int &mDepth;
+    explicit DepthGuard(int &depth) : mDepth(depth) { ++mDepth; }
+    ~DepthGuard() { --mDepth; }
+};
+
 /*
  * We process the iterator objects in the children list
  * by iterating from back to front. when we find a repeater object
@@ -77,6 +84,11 @@ public:
         case LOTData::Type::Repeater:
         case LOTData::Type::ShapeGroup:
         case LOTData::Type::Layer: {
+            if (mDepth >= kMaxModelTreeDepth) {
+                vWarning << "Max precomp nesting depth (" << kMaxModelTreeDepth << ") exceeded";
+                break;
+            }
+            DepthGuard guard(mDepth);
             visitChildren(static_cast<LOTGroupData *>(obj));
             break;
         }
@@ -84,6 +96,9 @@ public:
             break;
         }
     }
+
+private:
+    int mDepth{0};
 };
 
 void LOTCompositionData::processRepeaterObjects()
