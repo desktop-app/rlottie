@@ -114,6 +114,7 @@ public:
    bool complexContent() const {return mComplexContent;}
    virtual void update(int frameNo, const VMatrix &parentMatrix, float parentAlpha);
    VMatrix matrix(int frameNo) const;
+   VMatrix matrix(int frameNo, int depth) const;
    virtual void renderList(std::vector<VDrawable *> &){}
    virtual void render(VPainter *painter, const VRle &mask, const VRle &matteRle);
    bool hasMatte() { if (mLayerData->mMatteType == MatteType::None) return false; return true; }

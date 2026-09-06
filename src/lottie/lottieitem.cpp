@@ -517,8 +517,17 @@ void LOTLayerItem::update(int frameNumber, const VMatrix &parentMatrix,
 
 VMatrix LOTLayerItem::matrix(int frameNo) const
 {
+    return matrix(frameNo, 0);
+}
+
+VMatrix LOTLayerItem::matrix(int frameNo, int depth) const
+{
+    // Prevent infinite recursion from cyclic parent references
+    if (depth > 64) return VMatrix{};
+
     return mParentLayer
-               ? (mLayerData->matrix(frameNo) * mParentLayer->matrix(frameNo))
+               ? (mLayerData->matrix(frameNo)
+                  * mParentLayer->matrix(frameNo, depth + 1))
                : mLayerData->matrix(frameNo);
 }
 
