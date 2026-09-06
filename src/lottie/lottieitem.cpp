@@ -72,6 +72,16 @@ static bool strokeProp(rlottie::Property prop)
 static constexpr int    kMaxLayerDepth = 32;      // precomp nesting-depth limit
 static constexpr size_t kMaxLayerNodes = 100000;  // global render-node budget
 
+// Global weighted-cost budget shared across a whole composition's shape /
+// repeater content tree. Each constructed content node (group, paint,
+// repeater copy) charges at least 1 unit, and point-heavy shapes (polystar,
+// custom path) charge their actual point count. This bounds the
+// copies x points-per-shape amplification a repeater can produce, and also
+// bounds nested repeaters (repeater whose content contains another
+// repeater), since every copy at every nesting level draws from the same
+// shared budget.
+static constexpr size_t kMaxShapeContentBudget = 1000000;
+
 static bool isGoodParentLayer(LOTLayerItem *parent, LOTLayerItem *child) {
     do {
         if (parent == child) {
@@ -87,7 +97,9 @@ LOTCompItem::LOTCompItem(LOTModel *model)
 {
     mCompData = model->mRoot.get();
     size_t nodeBudget = kMaxLayerNodes;
-    mRootLayer = createLayerItem(mCompData->mRootLayer.get(), 0, nodeBudget);
+    size_t contentBudget = kMaxShapeContentBudget;
+    mRootLayer = createLayerItem(mCompData->mRootLayer.get(), 0, nodeBudget,
+                                 contentBudget);
     mRootLayer->setComplexContent(false);
     mViewSize = mCompData->size();
 }
@@ -99,7 +111,8 @@ void LOTCompItem::setValue(const std::string &keypath, LOTVariant &value)
 }
 
 std::unique_ptr<LOTLayerItem> LOTCompItem::createLayerItem(
-    LOTLayerData *layerData, int depth, size_t &nodeBudget)
+    LOTLayerData *layerData, int depth, size_t &nodeBudget,
+    size_t &contentBudget)
 {
     if (depth >= kMaxLayerDepth) {
         vWarning << "Max precomp nesting depth (" << kMaxLayerDepth << ") exceeded";
@@ -114,13 +127,13 @@ std::unique_ptr<LOTLayerItem> LOTCompItem::createLayerItem(
     switch (layerData->mLayerType) {
     case LayerType::Precomp: {
         return std::make_unique<LOTCompLayerItem>(layerData, depth + 1,
-                                                  nodeBudget);
+                                                  nodeBudget, contentBudget);
     }
     case LayerType::Solid: {
         return std::make_unique<LOTSolidLayerItem>(layerData);
     }
     case LayerType::Shape: {
-        return std::make_unique<LOTShapeLayerItem>(layerData);
+        return std::make_unique<LOTShapeLayerItem>(layerData, contentBudget);
     }
     case LayerType::Null: {
         return std::make_unique<LOTNullLayerItem>(layerData);
@@ -538,7 +551,8 @@ bool LOTLayerItem::visible() const
 }
 
 LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel, int depth,
-                                   size_t &nodeBudget)
+                                   size_t &nodeBudget,
+                                   size_t &contentBudget)
     : LOTLayerItem(layerModel)
 {
     // 1. create layer item
@@ -547,7 +561,8 @@ LOTCompLayerItem::LOTCompLayerItem(LOTLayerData *layerModel, int depth,
             continue;
         }
         auto model = static_cast<LOTLayerData *>(i.get());
-        auto item = LOTCompItem::createLayerItem(model, depth, nodeBudget);
+        auto item = LOTCompItem::createLayerItem(model, depth, nodeBudget,
+                                                 contentBudget);
         if (item) mLayers.push_back(std::move(item));
     }
 
@@ -896,11 +911,12 @@ LOTNullLayerItem::LOTNullLayerItem(LOTLayerData *layerData)
 }
 void LOTNullLayerItem::updateContent() {}
 
-LOTShapeLayerItem::LOTShapeLayerItem(LOTLayerData *layerData)
+LOTShapeLayerItem::LOTShapeLayerItem(LOTLayerData *layerData,
+                                     size_t &contentBudget)
     : LOTLayerItem(layerData),
-      mRoot(std::make_unique<LOTContentGroupItem>(nullptr))
+      mRoot(std::make_unique<LOTContentGroupItem>(nullptr, contentBudget))
 {
-    mRoot->addChildren(layerData);
+    mRoot->addChildren(layerData, contentBudget);
 
     std::vector<LOTPathDataItem *> list;
     mRoot->processPaintItems(list);
@@ -911,13 +927,43 @@ LOTShapeLayerItem::LOTShapeLayerItem(LOTLayerData *layerData)
     }
 }
 
+// Weighted cost of a single content item against kMaxShapeContentBudget.
+// Point-heavy shapes (polystar/polygon, custom path) charge their actual
+// point count (worst case MAX_POLY_POINTS for animated polystars, since the
+// per-frame value isn't known yet); everything else is a cheap wrapper/paint
+// node and charges a flat 1.
+static size_t contentItemCost(LOTData *contentData)
+{
+    constexpr float kMaxPolyPoints = 1024.0f;
+    switch (contentData->type()) {
+    case LOTData::Type::Polystar: {
+        auto *data = static_cast<LOTPolystarData *>(contentData);
+        float pts = data->mPointCount.isStatic()
+                        ? data->mPointCount.value(0)
+                        : kMaxPolyPoints;
+        if (!std::isfinite(pts)) pts = kMaxPolyPoints;
+        pts = std::min(std::max(pts, 1.0f), kMaxPolyPoints);
+        return size_t(pts);
+    }
+    case LOTData::Type::Shape: {
+        auto *data = static_cast<LOTShapeData *>(contentData);
+        if (data->mShape.isStatic()) {
+            return std::max<size_t>(1, data->mShape.value().mPoints.size());
+        }
+        return size_t(kMaxPolyPoints);
+    }
+    default:
+        return 1;
+    }
+}
+
 std::unique_ptr<LOTContentItem> LOTShapeLayerItem::createContentItem(
-    LOTData *contentData)
+    LOTData *contentData, size_t &contentBudget)
 {
     switch (contentData->type()) {
     case LOTData::Type::ShapeGroup: {
         return std::make_unique<LOTContentGroupItem>(
-            static_cast<LOTGroupData *>(contentData));
+            static_cast<LOTGroupData *>(contentData), contentBudget);
     }
     case LOTData::Type::Rect: {
         return std::make_unique<LOTRectItem>(
@@ -953,7 +999,7 @@ std::unique_ptr<LOTContentItem> LOTShapeLayerItem::createContentItem(
     }
     case LOTData::Type::Repeater: {
         return std::make_unique<LOTRepeaterItem>(
-            static_cast<LOTRepeaterData *>(contentData));
+            static_cast<LOTRepeaterData *>(contentData), contentBudget);
     }
     case LOTData::Type::Trim: {
         return std::make_unique<LOTTrimItem>(
@@ -1050,18 +1096,34 @@ bool LOTStrokeItem::resolveKeyPath(LOTKeyPath &keyPath, uint depth,
     return false;
 }
 
-LOTContentGroupItem::LOTContentGroupItem(LOTGroupData *data)
-    : LOTContentItem(ContentType::Group), mData(data)
+LOTContentGroupItem::LOTContentGroupItem()
+    : LOTContentItem(ContentType::Group)
 {
-    addChildren(mData);
 }
 
-void LOTContentGroupItem::addChildren(LOTGroupData *data)
+LOTContentGroupItem::LOTContentGroupItem(LOTGroupData *data,
+                                         size_t &contentBudget)
+    : LOTContentItem(ContentType::Group), mData(data)
+{
+    addChildren(mData, contentBudget);
+}
+
+void LOTContentGroupItem::addChildren(LOTGroupData *data,
+                                      size_t &contentBudget)
 {
     if (!data) return;
 
     for (auto &i : data->mChildren) {
-        auto content = LOTShapeLayerItem::createContentItem(i.get());
+        size_t cost = contentItemCost(i.get());
+        if (cost > contentBudget) {
+            vWarning << "Max shape content budget ("
+                     << kMaxShapeContentBudget << ") exceeded, dropping content item";
+            continue;
+        }
+        contentBudget -= cost;
+
+        auto content =
+            LOTShapeLayerItem::createContentItem(i.get(), contentBudget);
         if (content) {
             content->setParent(this);
             mContents.push_back(std::move(content));
@@ -1570,18 +1632,27 @@ void LOTTrimItem::addPathItems(std::vector<LOTPathDataItem *> &list,
               back_inserter(mPathItems));
 }
 
-LOTRepeaterItem::LOTRepeaterItem(LOTRepeaterData *data) : mRepeaterData(data)
+LOTRepeaterItem::LOTRepeaterItem(LOTRepeaterData *data, size_t &contentBudget)
+    : mRepeaterData(data)
 {
     assert(mRepeaterData->content());
 
-    mCopies = mRepeaterData->maxCopies();
+    int maxCopies = mRepeaterData->maxCopies();
 
-    for (int i = 0; i < mCopies; i++) {
-        auto content =
-            std::make_unique<LOTContentGroupItem>(mRepeaterData->content());
+    for (int i = 0; i < maxCopies; i++) {
+        if (contentBudget == 0) {
+            vWarning << "Max shape content budget (" << kMaxShapeContentBudget
+                     << ") exceeded, clamping repeater copies to " << i;
+            break;
+        }
+        --contentBudget;  // charge for this copy's own group wrapper
+
+        auto content = std::make_unique<LOTContentGroupItem>(
+            mRepeaterData->content(), contentBudget);
         content->setParent(this);
         mContents.push_back(std::move(content));
     }
+    mCopies = int(mContents.size());
 }
 
 void LOTRepeaterItem::update(int frameNo, const VMatrix &parentMatrix,

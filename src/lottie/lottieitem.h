@@ -66,7 +66,8 @@ public:
    explicit LOTCompItem(LOTModel *model);
    static std::unique_ptr<LOTLayerItem> createLayerItem(LOTLayerData *layerData,
                                                        int depth,
-                                                       size_t &nodeBudget);
+                                                       size_t &nodeBudget,
+                                                       size_t &contentBudget);
    bool update(int frameNo, const VSize &size, bool keepAspectRatio);
    VSize size() const { return mViewSize;}
    void buildRenderTree();
@@ -151,7 +152,8 @@ protected:
 class LOTCompLayerItem: public LOTLayerItem
 {
 public:
-   LOTCompLayerItem(LOTLayerData *layerData, int depth, size_t &nodeBudget);
+   LOTCompLayerItem(LOTLayerData *layerData, int depth, size_t &nodeBudget,
+                    size_t &contentBudget);
    void renderList(std::vector<VDrawable *> &list)final;
    void render(VPainter *painter, const VRle &mask, const VRle &matteRle) final;
    void buildLayerNode() final;
@@ -186,8 +188,9 @@ class LOTContentGroupItem;
 class LOTShapeLayerItem: public LOTLayerItem
 {
 public:
-   explicit LOTShapeLayerItem(LOTLayerData *layerData);
-   static std::unique_ptr<LOTContentItem> createContentItem(LOTData *contentData);
+   LOTShapeLayerItem(LOTLayerData *layerData, size_t &contentBudget);
+   static std::unique_ptr<LOTContentItem> createContentItem(
+       LOTData *contentData, size_t &contentBudget);
    void renderList(std::vector<VDrawable *> &list)final;
    void buildLayerNode() final;
    bool resolveKeyPath(LOTKeyPath &keyPath, uint depth, LOTVariant &value) override;
@@ -285,8 +288,9 @@ private:
 class LOTContentGroupItem: public LOTContentItem
 {
 public:
-   explicit LOTContentGroupItem(LOTGroupData *data=nullptr);
-   void addChildren(LOTGroupData *data);
+   LOTContentGroupItem();
+   LOTContentGroupItem(LOTGroupData *data, size_t &contentBudget);
+   void addChildren(LOTGroupData *data, size_t &contentBudget);
    void update(int frameNo, const VMatrix &parentMatrix, float parentAlpha, const DirtyFlag &flag) override;
    void applyTrim();
    void processTrimItems(std::vector<LOTPathDataItem *> &list);
@@ -511,7 +515,7 @@ private:
 class LOTRepeaterItem : public LOTContentGroupItem
 {
 public:
-   explicit LOTRepeaterItem(LOTRepeaterData *data);
+   LOTRepeaterItem(LOTRepeaterData *data, size_t &contentBudget);
    void update(int frameNo, const VMatrix &parentMatrix, float parentAlpha, const DirtyFlag &flag) final;
    void renderList(std::vector<VDrawable *> &list) final;
 private:
